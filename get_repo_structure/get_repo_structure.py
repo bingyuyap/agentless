@@ -64,8 +64,17 @@ def clone_repo(repo_name, repo_playground):
 
 
 def get_project_structure_from_scratch(
-    repo_name, commit_id, instance_id, repo_playground
+    repo_path, commit_id, playground, is_local=False
 ):
+    if is_local:
+        # Directly use local path without git operations
+        structure = create_structure(repo_path)
+        return {
+            "repo": os.path.basename(repo_path),
+            "base_commit": None,
+            "structure": structure,
+            "instance_id": str(uuid.uuid4()),
+        }
 
     # Generate a temperary folder and add uuid to avoid collision
     repo_playground = os.path.join(repo_playground, str(uuid.uuid4()))
@@ -76,6 +85,7 @@ def get_project_structure_from_scratch(
     # create playground
     os.makedirs(repo_playground)
 
+    repo_name = os.path.basename(repo_path)  # Add this line to get repo name from path
     clone_repo(repo_name, repo_playground)
     checkout_commit(f"{repo_playground}/{repo_to_top_folder[repo_name]}", commit_id)
     structure = create_structure(f"{repo_playground}/{repo_to_top_folder[repo_name]}")
@@ -87,7 +97,7 @@ def get_project_structure_from_scratch(
         "repo": repo_name,
         "base_commit": commit_id,
         "structure": structure,
-        "instance_id": instance_id,
+        "instance_id": str(uuid.uuid4()),  # Generate new instance_id
     }
     return d
 

@@ -44,7 +44,7 @@ def retrieve_locs(bug, args, swe_bench_data, found_files, prev_o, write_lock=Non
         instance_id, bug["repo"], bug["base_commit"], "playground"
     )
 
-    filter_none_python(structure)
+    # filter_none_python(structure)
     filter_out_test_files(structure)
 
     if args.filter_file:

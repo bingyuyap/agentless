@@ -5,7 +5,6 @@ import os
 from difflib import unified_diff
 from threading import Lock
 
-from datasets import load_dataset
 from tqdm import tqdm
 
 from agentless.util.api_requests import num_tokens_from_messages

@@ -4,7 +4,6 @@ import json
 import os
 from threading import Lock
 
-from datasets import load_dataset
 from tqdm import tqdm
 
 from agentless.fl.FL import LLMFL
@@ -98,7 +97,7 @@ def localize_irrelevant_instance(
 
 
 def localize_instance(
-    bug, args, swe_bench_data, start_file_locs, existing_instance_ids, write_lock=None
+    bug, args, local_repo_path, existing_instance_ids, write_lock=None
 ):
     instance_id = bug["instance_id"]
     log_file = os.path.join(
@@ -115,14 +114,23 @@ def localize_instance(
         logger.info(f"Skipping existing instance_id: {bug['instance_id']}")
         return
 
+    # Modify structure generation to handle directories
+    if isinstance(bug.get("files"), str):
+        repo_path = os.path.join(local_repo_path, bug["files"])
+    else:
+        repo_path = local_repo_path
+
     structure = get_repo_structure(
-        instance_id, bug["repo"], bug["base_commit"], "playground"
+        instance_id,
+        repo_path,  # Use the local path directly
+        None,
+        "playground",
+        is_local=True  # Add this flag to indicate local repository
     )
 
     logger.info(f"================ localize {instance_id} ================")
 
-    bench_data = [x for x in swe_bench_data if x["instance_id"] == instance_id][0]
-    problem_statement = bench_data["problem_statement"]
+    problem_statement = bug["problem_statement"]
 
     filter_none_python(structure)  # some basic filtering steps
     filter_out_test_files(structure)
@@ -430,16 +438,18 @@ def localize_irrelevant(args):
 
 
 def localize(args):
-    swe_bench_data = load_dataset(args.dataset, split="test")
-    start_file_locs = load_jsonl(args.start_file) if args.start_file else None
+    # Load local repository data
+    with open(args.local_repo, 'r') as f:
+        local_repo_data = json.load(f)
+
     existing_instance_ids = (
         load_existing_instance_ids(args.output_file) if args.skip_existing else set()
     )
 
     if args.num_threads == 1:
-        for bug in tqdm(swe_bench_data, colour="MAGENTA"):
+        for bug in tqdm(local_repo_data, colour="MAGENTA"):
             localize_instance(
-                bug, args, swe_bench_data, start_file_locs, existing_instance_ids
+                bug, args, args.local_repo_path, existing_instance_ids
             )
     else:
         write_lock = Lock()
@@ -451,16 +461,15 @@ def localize(args):
                     localize_instance,
                     bug,
                     args,
-                    swe_bench_data,
-                    start_file_locs,
+                    args.local_repo_path,
                     existing_instance_ids,
                     write_lock,
                 )
-                for bug in swe_bench_data
+                for bug in local_repo_data
             ]
             for future in tqdm(
                 concurrent.futures.as_completed(futures),
-                total=len(swe_bench_data),
+                total=len(local_repo_data),  # Changed from swe_bench_data to local_repo_data
                 colour="MAGENTA",
             ):
                 future.result()
@@ -591,6 +600,16 @@ def main():
         default="princeton-nlp/SWE-bench_Lite",
         choices=["princeton-nlp/SWE-bench_Lite", "princeton-nlp/SWE-bench_Verified"],
         help="Current supported dataset for evaluation",
+    )
+    parser.add_argument(
+        "--local_repo",
+        type=str,
+        help="Path to local repository JSON file containing bug data"
+    )
+    parser.add_argument(
+        "--local_repo_path",
+        type=str,
+        help="Path to local repository directory"
     )
 
     args = parser.parse_args()

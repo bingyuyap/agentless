@@ -382,17 +382,17 @@ def compile_gt_locations(gt_location: dict) -> tuple[list, set, set, set]:
 
 def show_project_structure(structure, spacing=0) -> str:
     """pprint the project structure"""
-
     pp_string = ""
 
+    if structure is None or isinstance(structure, str):  # Handle None and string cases
+        return " " * spacing + str(structure) + "\n"
+
     for key, value in structure.items():
-        if "." in key and ".py" not in key:
-            continue  # skip none python files
         if "." in key:
             pp_string += " " * spacing + str(key) + "\n"
         else:
             pp_string += " " * spacing + str(key) + "/" + "\n"
-        if "classes" not in value:
+        if value is not None and not isinstance(value, str) and "classes" not in value:
             pp_string += show_project_structure(value, spacing + 4)
 
     return pp_string
@@ -409,13 +409,14 @@ def filter_out_test_files(structure):
 
 def filter_none_python(structure):
     for key, value in list(structure.items()):
+        if value is None or isinstance(value, str):  # Skip None and string values
+            continue
         if (
             not "functions" in value.keys()
             and not "classes" in value.keys()
             and not "text" in value.keys()
         ) or not len(value.keys()) == 3:
             filter_none_python(value)
-
             if structure[key] == {}:
                 del structure[key]
         else:
@@ -648,7 +649,17 @@ def get_full_file_paths_and_classes_and_functions(structure, current_path=""):
 PROJECT_FILE_LOC = os.environ.get("PROJECT_FILE_LOC", None)
 
 
-def get_repo_structure(instance_id: str, repo_name, base_commit, playground):
+def get_repo_structure(
+    instance_id, repo_path, base_commit, playground, is_local=False
+):
+    if is_local:
+        # Handle local repository directly
+        return get_project_structure_from_scratch(
+            repo_path,
+            None,  # No commit ID needed
+            playground,
+            is_local=True
+        )
 
     if PROJECT_FILE_LOC is not None:
         with open(PROJECT_FILE_LOC + "/" + instance_id + ".json") as f:
@@ -656,7 +667,10 @@ def get_repo_structure(instance_id: str, repo_name, base_commit, playground):
         repo_structure = d["structure"]
     else:
         d = get_project_structure_from_scratch(
-            repo_name, base_commit, instance_id, playground
+            repo_path,  # Changed from repo_name to repo_path
+            base_commit,
+            instance_id,
+            playground
         )
         repo_structure = d["structure"]
 
