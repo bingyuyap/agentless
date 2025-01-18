@@ -4,7 +4,6 @@ import json
 import os
 from threading import Lock
 
-from datasets import load_dataset
 from tqdm import tqdm
 
 from agentless.fl.Index import EmbeddingIndex
@@ -16,8 +15,7 @@ from agentless.util.preprocess_data import (
 from agentless.util.utils import load_json, load_jsonl, setup_logger
 
 
-def retrieve_locs(bug, args, swe_bench_data, found_files, prev_o, write_lock=None):
-
+def retrieve_locs(bug, args, local_repo_data, found_files, prev_o, write_lock=None):
     found = False
     for o in prev_o:
         if o["instance_id"] == bug["instance_id"]:
@@ -29,35 +27,32 @@ def retrieve_locs(bug, args, swe_bench_data, found_files, prev_o, write_lock=Non
         return None
 
     instance_id = bug["instance_id"]
-
-    if args.target_id is not None:
-        if args.target_id != instance_id:
-            return None
-
     log_file = os.path.join(args.output_folder, "retrieval_logs", f"{instance_id}.log")
     logger = setup_logger(log_file)
     logger.info(f"Processing bug {instance_id}")
 
-    bench_data = [x for x in swe_bench_data if x["instance_id"] == instance_id][0]
-    problem_statement = bench_data["problem_statement"]
+    # Get problem statement from local data
+    problem_statement = bug["problem_statement"]
+
+    # Get repository structure using local path
     structure = get_repo_structure(
-        instance_id, bug["repo"], bug["base_commit"], "playground"
+        instance_id,
+        args.local_repo_path,  # Use the local path from arguments
+        None,  # No commit ID needed for local repos
+        "playground",
+        is_local=True  # Indicate this is a local repository
     )
 
-    # filter_none_python(structure)
     filter_out_test_files(structure)
 
     if args.filter_file:
-        kwargs = {  # build retrieval kwargs
-            "given_files": [x for x in found_files if x["instance_id"] == instance_id][
-                0
-            ]["found_files"],
+        kwargs = {
+            "given_files": [x for x in found_files if x["instance_id"] == instance_id][0]["found_files"],
             "filter_top_n": args.filter_top_n,
         }
     else:
         kwargs = {}
 
-    # main retrieval
     retriever = EmbeddingIndex(
         instance_id,
         structure,
@@ -90,20 +85,22 @@ def retrieve_locs(bug, args, swe_bench_data, found_files, prev_o, write_lock=Non
     if write_lock is not None:
         write_lock.release()
 
-
 def retrieve(args):
     if args.filter_file:
         found_files = load_jsonl(args.filter_file)
     else:
         found_files = []
 
-    swe_bench_data = load_dataset(args.dataset, split="test")
+    # Load local repository data instead of SWE-bench dataset
+    with open(args.local_repo, 'r') as f:
+        local_repo_data = json.load(f)
+
     prev_o = load_jsonl(args.output_file) if os.path.exists(args.output_file) else []
 
     if args.num_threads == 1:
-        for bug in tqdm(swe_bench_data, colour="MAGENTA"):
+        for bug in tqdm(local_repo_data, colour="MAGENTA"):  # Use local data
             retrieve_locs(
-                bug, args, swe_bench_data, found_files, prev_o, write_lock=None
+                bug, args, local_repo_data, found_files, prev_o, write_lock=None
             )
     else:
         write_lock = Lock()
@@ -115,20 +112,19 @@ def retrieve(args):
                     retrieve_locs,
                     bug,
                     args,
-                    swe_bench_data,
+                    local_repo_data,  # Pass local data
                     found_files,
                     prev_o,
                     write_lock,
                 )
-                for bug in swe_bench_data
+                for bug in local_repo_data  # Iterate over local data
             ]
             for _ in tqdm(
                 concurrent.futures.as_completed(futures),
-                total=len(swe_bench_data),
+                total=len(local_repo_data),  # Update total count
                 colour="MAGENTA",
             ):
                 pass
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -159,6 +155,18 @@ def main():
         type=str,
         default="princeton-nlp/SWE-bench_Lite",
         choices=["princeton-nlp/SWE-bench_Lite", "princeton-nlp/SWE-bench_Verified"],
+    )
+    parser.add_argument(
+        "--local_repo",
+        type=str,
+        required=True,  # Make it required for local operation
+        help="Path to local repository JSON file containing bug data"
+    )
+    parser.add_argument(
+        "--local_repo_path",
+        type=str,
+        required=True,
+        help="Path to local repository directory"
     )
 
     args = parser.parse_args()

@@ -66,9 +66,13 @@ def clone_repo(repo_name, repo_playground):
 def get_project_structure_from_scratch(
     repo_path, commit_id, playground, is_local=False
 ):
+    print(f"Starting to get project structure from scratch for: {repo_path}")
+
     if is_local:
-        # Directly use local path without git operations
+        print(f"Processing local repository at: {repo_path}")
         structure = create_structure(repo_path)
+        print("Successfully created structure for local repository")
+
         return {
             "repo": os.path.basename(repo_path),
             "base_commit": None,
@@ -76,29 +80,42 @@ def get_project_structure_from_scratch(
             "instance_id": str(uuid.uuid4()),
         }
 
-    # Generate a temperary folder and add uuid to avoid collision
-    repo_playground = os.path.join(repo_playground, str(uuid.uuid4()))
+    print(f"Setting up remote repository processing for: {repo_path}")
+    # Generate a temporary folder and add uuid to avoid collision
+    repo_playground = os.path.join(playground, str(uuid.uuid4()))
+    print(f"Created temporary playground directory at: {repo_playground}")
 
     # assert playground doesn't exist
     assert not os.path.exists(repo_playground), f"{repo_playground} already exists"
 
     # create playground
     os.makedirs(repo_playground)
+    print("Successfully created playground directory")
 
     repo_name = os.path.basename(repo_path)  # Add this line to get repo name from path
+    print(f"Starting to clone repository: {repo_name}")
     clone_repo(repo_name, repo_playground)
+    print(f"Checking out commit: {commit_id}")
     checkout_commit(f"{repo_playground}/{repo_to_top_folder[repo_name]}", commit_id)
+
+    print("Creating repository structure...")
     structure = create_structure(f"{repo_playground}/{repo_to_top_folder[repo_name]}")
+    print("Successfully created repository structure")
+
     # clean up
+    print("Cleaning up temporary files...")
     subprocess.run(
         ["rm", "-rf", f"{repo_playground}/{repo_to_top_folder[repo_name]}"], check=True
     )
+    print("Cleanup complete")
+
     d = {
         "repo": repo_name,
         "base_commit": commit_id,
         "structure": structure,
         "instance_id": str(uuid.uuid4()),  # Generate new instance_id
     }
+    print("Successfully generated project structure data")
     return d
 
 

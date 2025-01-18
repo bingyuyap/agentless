@@ -41,10 +41,13 @@ def localize_irrelevant_instance(
     bench_data = [x for x in swe_bench_data if x["instance_id"] == instance_id][0]
     problem_statement = bench_data["problem_statement"]
     structure = get_repo_structure(
-        instance_id, bug["repo"], bug["base_commit"], "playground"
+        instance_id,
+        args.local_repo_path,  # Use the local path from arguments
+        None,  # No commit ID needed for local repos
+        "playground",
+        is_local=True  # Indicate this is a local repository
     )
 
-    filter_none_python(structure)  # some basic filtering steps
     filter_out_test_files(structure)
 
     found_files = []
@@ -132,7 +135,6 @@ def localize_instance(
 
     problem_statement = bug["problem_statement"]
 
-    filter_none_python(structure)  # some basic filtering steps
     filter_out_test_files(structure)
 
     found_files = []
@@ -404,14 +406,17 @@ def localize_instance(
 
 
 def localize_irrelevant(args):
-    swe_bench_data = load_dataset(args.dataset, split="test")
+    # Load local repository data instead of SWE-bench
+    with open(args.local_repo, 'r') as f:
+        local_repo_data = json.load(f)
+
     existing_instance_ids = (
         load_existing_instance_ids(args.output_file) if args.skip_existing else set()
     )
     if args.num_threads == 1:
-        for bug in tqdm(swe_bench_data, colour="MAGENTA"):
+        for bug in tqdm(local_repo_data, colour="MAGENTA"):  # Use local_repo_data
             localize_irrelevant_instance(
-                bug, args, swe_bench_data, existing_instance_ids
+                bug, args, local_repo_data, existing_instance_ids  # Pass local data
             )
     else:
         write_lock = Lock()
@@ -423,19 +428,18 @@ def localize_irrelevant(args):
                     localize_irrelevant_instance,
                     bug,
                     args,
-                    swe_bench_data,
+                    local_repo_data,  # Use local data
                     existing_instance_ids,
                     write_lock,
                 )
-                for bug in swe_bench_data
+                for bug in local_repo_data  # Iterate over local data
             ]
             for future in tqdm(
                 concurrent.futures.as_completed(futures),
-                total=len(swe_bench_data),
+                total=len(local_repo_data),  # Update total count
                 colour="MAGENTA",
             ):
                 future.result()
-
 
 def localize(args):
     # Load local repository data

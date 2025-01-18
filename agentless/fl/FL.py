@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
+import json
+import os
 
 from agentless.repair.repair import construct_topn_file_context
 from agentless.util.compress_file import get_skeleton
+from agentless.util.model import make_model
 from agentless.util.postprocess_data import extract_code_blocks, extract_locs_for_files
 from agentless.util.preprocess_data import (
     correct_file_paths,
@@ -243,85 +246,66 @@ Return just the locations wrapped with ```.
         if content:
             return content.strip().split("\n")
 
-    def localize_irrelevant(self, top_n=1, mock=False):
-        from agentless.util.api_requests import num_tokens_from_messages
-        from agentless.util.model import make_model
+    def localize_irrelevant(self, mock=False):
+        if mock:
+            return ["mock_file1.py", "mock_file2.py"], {}, {}
 
         message = self.obtain_irrelevant_files_prompt.format(
             problem_statement=self.problem_statement,
-            structure=show_project_structure(self.structure).strip(),
-        ).strip()
-        self.logger.info(f"prompting with message:\n{message}")
-        self.logger.info("=" * 80)
-
-        if mock:
-            self.logger.info("Skipping querying model since mock=True")
-            traj = {
-                "prompt": message,
-                "usage": {
-                    "prompt_tokens": num_tokens_from_messages(message, self.model),
-                },
-            }
-            return [], {"raw_output_loc": ""}, traj
+            structure=self.structure
+        )
 
         model = make_model(
             model=self.model_name,
             backend=self.backend,
             logger=self.logger,
-            max_tokens=2048,  # self.max_tokens,
-            temperature=0,
-            batch_size=1,
-        )
-        traj = model.codegen(message, num_samples=1)[0]
-        traj["prompt"] = message
-        raw_output = traj["response"]
-
-        files, classes, functions = get_full_file_paths_and_classes_and_functions(
-            self.structure
+            max_tokens=1000,
+            temperature=0.0,
         )
 
-        f_files = []
-        filtered_files = []
+        raw_output = model.codegen(message, num_samples=1)[0]
 
-        model_identified_files_folder = self._parse_model_return_lines(raw_output)
-        # remove any none folder none files
-        model_identified_files_folder = [
-            x
-            for x in model_identified_files_folder
-            if x.endswith("/") or x.endswith(".py")
-        ]
-
-        for file_content in files:
-            file_name = file_content[0]
-            if any([file_name.startswith(x) for x in model_identified_files_folder]):
-                filtered_files.append(file_name)
+        try:
+            # Extract the actual response content from the dictionary
+            if isinstance(raw_output, dict):
+                response_content = raw_output.get("response", "")
             else:
-                f_files.append(file_name)
+                response_content = str(raw_output)
 
-        self.logger.info(raw_output)
+            # Extract code block between ```
+            start_idx = response_content.find("```")
+            end_idx = response_content.rfind("```")
 
-        return (
-            f_files,
-            {
-                "raw_output_files": raw_output,
-                "found_files": f_files,
-                "filtered_files": filtered_files,
-            },
-            traj,
-        )
+            if start_idx == -1 or end_idx == -1:
+                raise ValueError("No code block found in response")
+
+            file_list = response_content[start_idx+3:end_idx].strip().split("\n")
+
+            # Filter out empty lines and normalize paths
+            found_files = [
+                f.strip() for f in file_list
+                if f.strip() and not f.strip().startswith("```")
+            ]
+
+            return found_files, {"raw_output": response_content}, {"response": response_content}
+
+        except Exception as e:
+            self.logger.error(f"Error parsing irrelevant files: {e}")
+            self.logger.error(f"Raw output: {raw_output}")
+            return [], {"raw_output": response_content}, {"response": response_content}
 
     def localize(self, top_n=1, mock=False) -> tuple[list, list, list, any]:
         from agentless.util.api_requests import num_tokens_from_messages
         from agentless.util.model import make_model
 
-        found_files = []
-
         message = self.obtain_relevant_files_prompt.format(
             problem_statement=self.problem_statement,
             structure=show_project_structure(self.structure).strip(),
         ).strip()
+
         self.logger.info(f"prompting with message:\n{message}")
         self.logger.info("=" * 80)
+
         if mock:
             self.logger.info("Skipping querying model since mock=True")
             traj = {
@@ -340,22 +324,130 @@ Return just the locations wrapped with ```.
             temperature=0,
             batch_size=1,
         )
+
         traj = model.codegen(message, num_samples=1)[0]
         traj["prompt"] = message
         raw_output = traj["response"]
-        model_found_files = self._parse_model_return_lines(raw_output)
 
+        # Debug print raw output
+        print(f"Raw model output:\n{raw_output}")
+
+        # Improved file path parsing
+        try:
+            # Extract code block between ```
+            start_idx = raw_output.find("```")
+            end_idx = raw_output.rfind("```")
+            print(f"Code block indices: start={start_idx}, end={end_idx}")
+
+            if start_idx == -1 or end_idx == -1:
+                raise ValueError("No code block found in response")
+
+            file_list = raw_output[start_idx+3:end_idx].strip().split("\n")
+            print(f"Initial file list: {file_list}")
+
+            # Filter out empty lines and normalize paths
+            model_found_files = [
+                f.strip() for f in file_list
+                if f.strip() and not f.strip().startswith("```")
+            ]
+
+            self.logger.info(f"Parsed files: {model_found_files}")
+            print(f"Model found files after filtering: {model_found_files}")
+
+        except Exception as e:
+            self.logger.error(f"Error parsing files: {e}")
+            model_found_files = []
+            print(f"Error parsing files: {e}")
+
+        print("Structure dictionary contents:")
+        print(json.dumps(self.structure, indent=2))
+        # Get all valid files from structure
         files, classes, functions = get_full_file_paths_and_classes_and_functions(
-            self.structure
-        )
+                self.structure['structure']
+            )
+        print(f"Total files in structure: {len(files)}")
 
-        # sort based on order of appearance in model_found_files
-        found_files = correct_file_paths(model_found_files, files)
+        # Convert repository files to relative paths
+        try:
+            # Get the base path from structure if available
+            base_path = self.structure.get('base_path', '')
+            print(f"Base path from structure: {base_path}")
 
-        self.logger.info(raw_output)
+            if not base_path:
+                # If no base_path, use the first common path
+                base_path = os.path.commonpath(files) if files else ''
+                print(f"Calculated common base path: {base_path}")
+
+            print(f"Using base path: {base_path}")
+            repo_files = [os.path.relpath(f, base_path) if base_path else f
+                        for f in files]
+            print(f"First 5 repo files: {repo_files[:5]}")
+
+        except Exception as e:
+            self.logger.error(f"Error processing paths: {e}")
+            repo_files = files  # Fallback to absolute paths
+            print(f"Error processing paths, using absolute paths: {e}")
+
+        # Validate and correct paths
+        found_files = []
+        print(f"All repo files: {repo_files}")
+        for file_path in model_found_files:
+            # Normalize the path for comparison
+            normalized_path = os.path.normpath(file_path)
+            print(f"Normalized path: {normalized_path}")
+
+            # Check if file exists in structure (relative path)
+            if normalized_path in repo_files:
+                print(f"Exact match found: {normalized_path}")
+                found_files.append(normalized_path)
+            else:
+                # Try different matching strategies
+                corrected_path = None
+
+                # Strategy 1: Match by filename only
+                target_filename = os.path.basename(normalized_path)
+                matches = [f for f in repo_files if os.path.basename(f) == target_filename]
+                print(f"Filename matches for {target_filename}: {matches}")
+
+                if len(matches) == 1:  # Only use if there's a single match
+                    corrected_path = matches[0]
+                    self.logger.info(f"Filename match: {normalized_path} -> {corrected_path}")
+                    print(f"Using filename match: {corrected_path}")
+
+                # Strategy 2: Match by path components
+                if not corrected_path:
+                    target_components = normalized_path.split(os.sep)
+                    print(f"Target components: {target_components}")
+                    for repo_file in repo_files:
+                        repo_components = repo_file.split(os.sep)
+                        if all(c in repo_components for c in target_components):
+                            corrected_path = repo_file
+                            self.logger.info(f"Component match: {normalized_path} -> {corrected_path}")
+                            print(f"Using component match: {corrected_path}")
+                            break
+
+                # Strategy 3: Case-insensitive partial match
+                if not corrected_path:
+                    corrected_path = next(
+                        (f for f in repo_files if normalized_path.lower() in f.lower()),
+                        None
+                    )
+                    if corrected_path:
+                        self.logger.info(f"Partial match: {normalized_path} -> {corrected_path}")
+                        print(f"Using partial match: {corrected_path}")
+
+                if corrected_path:
+                    found_files.append(corrected_path)
+                else:
+                    self.logger.warning(f"Invalid file path: {normalized_path}")
+                    self.logger.debug(f"Available files: {repo_files}")
+                    print(f"Could not find match for: {normalized_path}")
+
+        self.logger.info(f"Final found files: {found_files}")
+        print(f"Final found files: {found_files}")
 
         return (
-            found_files,
+            found_files[:top_n],  # Return only top_n files
             {"raw_output_files": raw_output},
             traj,
         )

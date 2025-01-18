@@ -387,7 +387,15 @@ def show_project_structure(structure, spacing=0) -> str:
     if structure is None or isinstance(structure, str):  # Handle None and string cases
         return " " * spacing + str(structure) + "\n"
 
+    # If structure contains nested 'structure' key, use that
+    if isinstance(structure, dict) and 'structure' in structure:
+        structure = structure['structure']
+
     for key, value in structure.items():
+        # Skip metadata keys
+        if key in ['repo', 'base_commit', 'instance_id']:
+            continue
+
         if "." in key:
             pp_string += " " * spacing + str(key) + "\n"
         else:
@@ -580,10 +588,10 @@ def filter_proposed_functions(proposed_functions, repo_structure):
                 )
     return filtered_functions
 
-
 def get_full_file_paths_and_classes_and_functions(structure, current_path=""):
     """
     Recursively retrieve all file paths, classes, and functions within a directory structure.
+    Language-agnostic version that works for any programming language.
 
     Arguments:
     structure -- a dictionary representing the directory structure
@@ -598,15 +606,53 @@ def get_full_file_paths_and_classes_and_functions(structure, current_path=""):
     files = []
     classes = []
     functions = []
+
     for name, content in structure.items():
+        # Skip metadata keys
+        if name in ['repo', 'base_commit', 'instance_id']:
+            continue
+
         if isinstance(content, dict):
-            if (
-                not "functions" in content.keys()
-                and not "classes" in content.keys()
-                and not "text" in content.keys()
-            ) or not len(content.keys()) == 3:
-                # or guards against case where functions and classes are somehow part of the structure.
-                next_path = f"{current_path}/{name}" if current_path else name
+            # Handle directory structure
+            next_path = f"{current_path}/{name}" if current_path else name
+
+            # Check if this is a file with metadata
+            if all(key in content for key in ['text', 'classes', 'functions']):
+                # File with metadata
+                files.append((next_path, content["text"]))
+
+                # Process classes if they exist
+                if "classes" in content:
+                    for clazz in content["classes"]:
+                        classes.append({
+                            "file": next_path,
+                            "name": clazz.get("name", ""),
+                            "start_line": clazz.get("start_line", 0),
+                            "end_line": clazz.get("end_line", 0),
+                            "language": clazz.get("language", "unknown"),
+                            "methods": [
+                                {
+                                    "name": method.get("name", ""),
+                                    "start_line": method.get("start_line", 0),
+                                    "end_line": method.get("end_line", 0),
+                                    "language": method.get("language", "unknown")
+                                }
+                                for method in clazz.get("methods", [])
+                            ]
+                        })
+
+                # Process functions if they exist
+                if "functions" in content:
+                    for function in content["functions"]:
+                        functions.append({
+                            "file": next_path,
+                            "name": function.get("name", ""),
+                            "start_line": function.get("start_line", 0),
+                            "end_line": function.get("end_line", 0),
+                            "language": function.get("language", "unknown")
+                        })
+            else:
+                # Regular directory, recurse
                 (
                     sub_files,
                     sub_classes,
@@ -615,45 +661,34 @@ def get_full_file_paths_and_classes_and_functions(structure, current_path=""):
                 files.extend(sub_files)
                 classes.extend(sub_classes)
                 functions.extend(sub_functions)
-            else:
-                next_path = f"{current_path}/{name}" if current_path else name
-                files.append((next_path, content["text"]))
-                if "classes" in content:
-                    for clazz in content["classes"]:
-                        classes.append(
-                            {
-                                "file": next_path,
-                                "name": clazz["name"],
-                                "start_line": clazz["start_line"],
-                                "end_line": clazz["end_line"],
-                                "methods": [
-                                    {
-                                        "name": method["name"],
-                                        "start_line": method["start_line"],
-                                        "end_line": method["end_line"],
-                                    }
-                                    for method in clazz.get("methods", [])
-                                ],
-                            }
-                        )
-                if "functions" in content:
-                    for function in content["functions"]:
-                        function["file"] = next_path
-                        functions.append(function)
         else:
+            # Simple file without metadata
             next_path = f"{current_path}/{name}" if current_path else name
             files.append(next_path)
+
     return files, classes, functions
 
-
 PROJECT_FILE_LOC = os.environ.get("PROJECT_FILE_LOC", None)
-
 
 def get_repo_structure(
     instance_id, repo_path, base_commit, playground, is_local=False
 ):
+    """Get repository structure either from local files or by parsing from scratch.
+
+    Args:
+        instance_id: Unique identifier for the repository instance
+        repo_path: Path to the repository (local path or remote URL)
+        base_commit: Commit hash for remote repositories
+        playground: Directory for temporary files
+        is_local: Boolean indicating if repository is local
+
+    Returns:
+        Dictionary containing the repository structure
+    """
+    print(f"Getting repository structure for instance: {instance_id}")
+
     if is_local:
-        # Handle local repository directly
+        print(f"Processing local repository at: {repo_path}")
         return get_project_structure_from_scratch(
             repo_path,
             None,  # No commit ID needed
@@ -661,11 +696,23 @@ def get_repo_structure(
             is_local=True
         )
 
+    # Check if cached structure exists
     if PROJECT_FILE_LOC is not None:
-        with open(PROJECT_FILE_LOC + "/" + instance_id + ".json") as f:
-            d = json.load(f)
-        repo_structure = d["structure"]
-    else:
+
+        cache_file = os.path.join(PROJECT_FILE_LOC, f"{instance_id}.json")
+        print(f"Checking for cached structure at: {cache_file}")
+        try:
+            with open(cache_file) as f:
+                d = json.load(f)
+            repo_structure = d["structure"]
+            print("Successfully loaded cached repository structure")
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Failed to load cached structure: {e}")
+            repo_structure = None
+
+    # If no cached structure or loading failed, parse from scratch
+    if PROJECT_FILE_LOC is None or repo_structure is None:
+        print(f"Parsing repository structure from scratch for: {repo_path}")
         d = get_project_structure_from_scratch(
             repo_path,  # Changed from repo_name to repo_path
             base_commit,
@@ -673,6 +720,7 @@ def get_repo_structure(
             playground
         )
         repo_structure = d["structure"]
+        print("Successfully parsed repository structure")
 
     return repo_structure
 
